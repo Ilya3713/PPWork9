@@ -1,63 +1,88 @@
+from pymongo import MongoClient, ASCENDING
 import csv
-import re
-from pymongo import MongoClient
-
-client = MongoClient()
-io.mikhailutca_db = client['io.mikhailutca']
-
-date_list = []
-performer_list = []
-price_list = []
-place_list = []
+from pprint import pprint
+from datetime import datetime
+from urllib.parse import quote_plus
 
 
-def read_data(csv_file, db):
-    concerts_collection = db['concerts']
-    with open(csv_file, encoding='utf8') as csvfile:
-        reader = csv.DictReader(csvfile)
-        for key in reader:
-            for item in key:
-                date_list.append(key[item])
-        for item in date_list:
-            if date_list.index(item) % 4 == 0:
-                performer_list.append(item)
-        for item in performer_list:
-            if item in date_list:
-                date_list.remove(item)
-        for item in date_list:
-            if date_list.index(item) % 3 == 0:
-                price_list.append(item)
-        for item in price_list:
-            if item in date_list:
-                date_list.remove(item)
-        for item in date_list:
-            if date_list.index(item) % 2 == 0:
-                place_list.append(item)
-        for item in place_list:
-            if item in date_list:
-                date_list.remove(item)
-        for performer in performer_list:
-            i = performer_list.index(performer)
-            concert = {
-                'performer': performer,
-                'price': int(price_list[i]),
-                'place': place_list[i],
-                'date': date_list[i]
-            }
-            db.concerts_collection.insert_one(concert)
-    return concerts_collection
+def mongo_connect(login='', password='', server='localhost', port=27017, db=''):
+    if login:
+        url = "mongodb://%s:%s@%s:%s/%s" % (quote_plus(login), quote_plus(password),
+                                            quote_plus(server), port, quote_plus(db))
+    else:
+        url = "mongodb://%s:%s/%s" % (quote_plus(server), port, quote_plus(db))
+    try:
+        client = MongoClient(url)
+        client.admin.command('ismaster')
+    except Exception as err:
+        print("Подлючение не удалось: ", err)
+    else:
+        print("Подлючение успешно!!!")
+        return client
 
 
-def find_cheapest(collection):
-    return list(collection.find().sort('price'))
+def read_data(path_to_file, db_object):
+    with open(path_to_file, encoding='utf8') as file:
+        row = csv.DictReader(file)
+        db_object.insert_many(row)
 
 
-def find_by_name(name, collection):
-    regex = re.compile(name, re.I)
-    return list(collection.find({'performer': regex}).sort('price'))
+def format_data(db_object, column_price='Цена', column_date='Дата'):
+    for doc in db_object.find():
+        db_object.find_one_and_update({'_id': doc['_id'], column_price: {'$type': 'string'}},
+                                      {'$set': {column_price: int(doc[column_price])}})
+        if isinstance(doc[column_date], str):
+            raw_data = doc[column_date]
+            list_data = [i if (len(i) == 2) else f'0{i}' for i in raw_data.split('.')]
+            str_data = raw_data if len(raw_data) == 5 else list_data
+            try:
+                data_ = datetime.fromisoformat('2019-{0[1]}-{0[0]}'.format(str_data))
+                db_object.find_one_and_update({'_id': doc['_id'], column_date: {'$type': 'string'}},
+                                              {'$set': {column_date: data_}})
+            except ValueError as err:
+                print('Error in value date. Detailed: ', err)
+            except Exception as err:
+                print(err)
+
+
+def find_cheapest(db_object, column_find='Цена'):
+    sort = db_object.find().sort(column_find, ASCENDING)
+    pprint(list(sort))
+
+
+def find_by_name(db_object, name_find, column_find, column_sort='Цена'):
+    artist = db_object.find({column_find: {'$regex': '.*%s.*' % name_find,
+                                           '$options': 'i'}}).sort(column_sort, ASCENDING)
+    pprint(list(artist))
+
+
+def find_by_date(db_object, start_date, end_date, column_find='Дата'):
+    try:
+        start = datetime.fromisoformat(start_date)
+        end = datetime.fromisoformat(end_date)
+        data_ = db_object.find({column_find: {'$gte': start, '$lte': end}}
+                               ).sort(column_find, ASCENDING)
+        pprint(list(data_))
+    except ValueError as err:
+        print('Error in value date. Detailed: ', err)
+    except Exception as err:
+        print(err)
 
 
 if __name__ == '__main__':
-    # read_data('artists.csv', io.mikhailutca_db.concerts_collection)
-    # find_cheapest(io.mikhailutca_db.concerts_collection)
-    find_by_name('on', io.mikhailutca_db.concerts_collection)
+    conn = mongo_connect()
+    concerts = conn['mikhailutca_db']['concerts']
+    read_data('artists.csv', concerts)
+    format_data(concerts)
+
+    find_cheapest(concerts)
+    print(f'{"=" * 90}')
+
+    find_by_name(concerts,'on', 'Исполнитель')
+    print(f'{"=" * 90}')
+
+    find_by_name(concerts, 'st', 'Место')
+    print(f'{"=" * 90}')
+
+    find_by_date(concerts, '2019-07-01', '2019-07-30')
+    conn.close()
